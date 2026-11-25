@@ -85,8 +85,8 @@ add_subdirectory(libs/usb-serial-debug)
 # Add examples if necessary here
 # Uncomment the examples that you want to include in your project.
 #
- add_subdirectory(examples/hello_blink)
- add_subdirectory(examples/hello_blink_freertos)
+# add_subdirectory(examples/hello_blink)
+# add_subdirectory(examples/hello_blink_freertos)
 # add_subdirectory(examples/hello_pico)
 # add_subdirectory(examples/hello_freertos)
 # add_subdirectory(examples/hello_dual_cdc)
@@ -112,6 +112,7 @@ add_subdirectory(libs/usb-serial-debug)
 # If you add the headers in a different directory, you should use: target_include_directories
 add_executable(${MAIN_TARGET}
     src/main.c
+    src/communication.c
 )
 
 # Links. Add all libraries that application is using. It must at least use the pico_stdlib
@@ -126,6 +127,7 @@ target_link_libraries(${MAIN_TARGET}
         FreeRTOS-Kernel
         FreeRTOS-Kernel-Heap4
         TKJHAT_SDK
+        usb_serial_debug
 )
 
 # Include libraries necessaries to control the WiFi. If you are using the internal pico LED in W model, it is also 
@@ -135,7 +137,7 @@ if (PICO_CYW43_SUPPORTED)
 endif()
 
 #Support for stdio (printf, fwrite, puts...) via usb or UART. 
-pico_enable_stdio_usb(${MAIN_TARGET} 1)
+pico_enable_stdio_usb(${MAIN_TARGET} 0)
 pico_enable_stdio_uart(${MAIN_TARGET} 0)
 
 # Create different output files: 
