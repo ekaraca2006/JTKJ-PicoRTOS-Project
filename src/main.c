@@ -1,148 +1,120 @@
-#include <stdio.h>
+#include <stdbool.h>
+#include <stddef.h>
 
-#include <pico/stdlib.h>
+#include "pico/stdlib.h"
 
-#include <FreeRTOS.h>
-#include <task.h>
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "task.h"
 
-#include <tusb.h>
+#include "tusb.h"
 #include "usbSerialDebug/helper.h"
 
 #include "tkjhat/sdk.h"
+
 #include "communication.h"
+#include "display.h"
+#include "morse.h"
 
-#define DEFAULT_STACK_SIZE 2048
-#define USB_STACK_SIZE 2048
+#define USB_STACK_SIZE           2048
+#define MORSE_STACK_SIZE         2048
+#define COMMUNICATION_STACK_SIZE 1024
+#define DISPLAY_STACK_SIZE       2048
+#define BUZZER_STACK_SIZE        1024
 
+#define USB_PRIORITY             3
+#define APP_PRIORITY             2
 
-enum state { WAITING = 1, DATA_READY };
-enum state programState = WAITING;
-
-// Global variable for ambient light
-uint32_t ambientLight;
-
-
-// Button interrupt callback
-static void btn_fxn(uint gpio, uint32_t eventMask) {
-    toggle_red_led();
-}
-
-
-// Sensor task
-static void sensor_task(void *arg) {
-    (void)arg;
-
-    init_veml6030();
-
+/* Blink the LED forever if the program cannot finish setting up. */
+static void show_error(void)
+{
     for (;;) {
-        if (programState == WAITING) {
-            ambientLight = veml6030_read_light();
-            programState = DATA_READY;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        toggle_red_led();
+        sleep_ms(200);
     }
 }
 
+/* TinyUSB must be checked regularly while the device is running. */
+static void usb_task(void *argument)
+{
+    (void)argument;
 
-// USB task: run TinyUSB continuously
-static void usbTask(void *arg) {
-    (void)arg;
-
-    while (1) {
+    for (;;) {
         tud_task();
     }
 }
 
+int main(void)
+{
+    SemaphoreHandle_t i2c_mutex;
+    TaskHandle_t usb_task_handle = NULL;
 
-int main(void) {
-
-    // Initialize TKJ HAT
+    /* Start the HAT and its I2C bus. */
     init_hat_sdk();
     sleep_ms(300);
 
-    // Initialize Morse communication queue
-    communication_init();
-
-    // Initialize LED and button
     init_red_led();
+    set_red_led_status(false);
     init_button1();
 
-    gpio_set_irq_enabled_with_callback(
-        SW1_PIN,
-        GPIO_IRQ_EDGE_RISE,
-        true,
-        &btn_fxn
-    );
-
-
-    // Task handles
-    TaskHandle_t hSensorTask = NULL;
-    TaskHandle_t hCommunicationTask = NULL;
-    TaskHandle_t hUSB = NULL;
-
-    BaseType_t result;
-
-
-    // Create USB task
-    result = xTaskCreate(
-        usbTask,
-        "usb",
-        USB_STACK_SIZE,
-        NULL,
-        3,
-        &hUSB
-    );
-
-    if (result != pdPASS) {
-        return 0;
+    /* Set up the OLED, buzzer, IMU, and message queues. */
+    if (!display_init()) {
+        show_error();
     }
 
-
-    // Pin USB task to core 0 when using multiple cores
-    #if (configNUMBER_OF_CORES > 1)
-        vTaskCoreAffinitySet(hUSB, 1u << 0);
-    #endif
-
-
-    // Create sensor task
-    result = xTaskCreate(
-        sensor_task,
-        "sensor",
-        DEFAULT_STACK_SIZE,
-        NULL,
-        2,
-        &hSensorTask
-    );
-
-    if (result != pdPASS) {
-        return 0;
+    if (!morse_init()) {
+        show_error();
     }
 
-
-    // Create communication task
-    result = xTaskCreate(
-        communication_task,
-        "communication",
-        DEFAULT_STACK_SIZE,
-        NULL,
-        2,
-        &hCommunicationTask
-    );
-
-    if (result != pdPASS) {
-        return 0;
+    if (!communication_init()) {
+        show_error();
     }
 
+    /* The IMU and OLED both use I2C, so they share this mutex. */
+    i2c_mutex = xSemaphoreCreateMutex();
+    if (i2c_mutex == NULL) {
+        show_error();
+    }
 
-    // Initialize TinyUSB and USB Serial Debug
-    // Keep these calls immediately before the scheduler.
+    /* Start the tasks. */
+    if (xTaskCreate(usb_task, "usb", USB_STACK_SIZE, NULL,
+                    USB_PRIORITY, &usb_task_handle) != pdPASS) {
+        show_error();
+    }
+
+    if (xTaskCreate(morse_task, "morse", MORSE_STACK_SIZE, i2c_mutex,
+                    APP_PRIORITY, NULL) != pdPASS) {
+        show_error();
+    }
+
+    if (xTaskCreate(communication_task, "communication",
+                    COMMUNICATION_STACK_SIZE, NULL,
+                    APP_PRIORITY, NULL) != pdPASS) {
+        show_error();
+    }
+
+    if (xTaskCreate(display_task, "display", DISPLAY_STACK_SIZE,
+                    i2c_mutex, APP_PRIORITY, NULL) != pdPASS) {
+        show_error();
+    }
+
+    if (xTaskCreate(buzzer_task, "buzzer", BUZZER_STACK_SIZE,
+                    NULL, APP_PRIORITY, NULL) != pdPASS) {
+        show_error();
+    }
+
+#if (configNUMBER_OF_CORES > 1)
+    /* Keep USB processing on core 0, like the course examples. */
+    vTaskCoreAffinitySet(usb_task_handle, 1u << 0);
+#endif
+
+    /* Initialize USB just before starting FreeRTOS. */
     tusb_init();
-    usb_serial_init();
+    (void)usb_serial_init();
 
-
-    // Start FreeRTOS scheduler
     vTaskStartScheduler();
 
+    /* The scheduler should not return. */
+    show_error();
     return 0;
 }

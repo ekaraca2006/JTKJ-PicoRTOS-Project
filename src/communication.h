@@ -1,17 +1,19 @@
-
 #ifndef COMMUNICATION_H
 #define COMMUNICATION_H
 
 #include <stdbool.h>
-#include <stdint.h>
+#include "FreeRTOS.h"
 
-// Initialize the Morse communication system
-void communication_init(void);
+/* Set up the queues used for USB messages. */
+bool communication_init(void);
 
-// Send one Morse symbol to the communication queue
-bool morse_send(char symbol);
+/* Add one Morse character to the sending queue. */
+bool morse_send(char character);
 
-// FreeRTOS communication task
-void communication_task(void *arg);
+/* Get one character received from the workstation. */
+bool communication_receive(char *character, TickType_t wait_time);
+
+/* FreeRTOS task that sends characters to the workstation. */
+void communication_task(void *argument);
 
 #endif

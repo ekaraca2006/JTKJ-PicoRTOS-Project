@@ -1,112 +1,146 @@
-#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "FreeRTOS.h"
+#include "queue.h"
+#include "task.h"
+
+#include "tusb.h"
+#include "tkjhat/sdk.h"
+
 #include "communication.h"
 
-#include <FreeRTOS.h>
-#include <queue.h>
-#include <task.h>
+#define TX_QUEUE_SIZE 256
+#define RX_QUEUE_SIZE 512
+#define MORSE_USB_PORT 1
 
-#include <tusb.h>
+/* CDC0 is for debugging. Morse messages use CDC1. */
+static QueueHandle_t tx_queue = NULL;
+static QueueHandle_t rx_queue = NULL;
 
-#define MORSE_QUEUE_LENGTH 64
-#define CDC_ITF_TX 1
-
-// Queue for transferring Morse symbols between tasks
-static QueueHandle_t morseQueue = NULL;
-
-
-// Initialize the Morse communication queue
-void communication_init(void)
+bool communication_init(void)
 {
-    morseQueue = xQueueCreate(
-        MORSE_QUEUE_LENGTH,
-        sizeof(char)
-    );
+    tx_queue = xQueueCreate(TX_QUEUE_SIZE, sizeof(char));
+    if (tx_queue == NULL) {
+        return false;
+    }
+
+    rx_queue = xQueueCreate(RX_QUEUE_SIZE, sizeof(char));
+    if (rx_queue == NULL) {
+        vQueueDelete(tx_queue);
+        tx_queue = NULL;
+        return false;
+    }
+
+    return true;
 }
 
-
-// Send one Morse symbol to the queue
-bool morse_send(char symbol)
+bool morse_send(char character)
 {
-    if (morseQueue == NULL) {
+    if (tx_queue == NULL) {
         return false;
     }
 
-    // Only accept valid Morse protocol characters
-    if (symbol != '.' &&
-        symbol != '-' &&
-        symbol != ' ' &&
-        symbol != '\n') {
+    if (character != '.' && character != '-' &&
+        character != ' ' && character != '\n') {
         return false;
     }
 
-    return xQueueSend(
-        morseQueue,
-        &symbol,
-        0
-    ) == pdPASS;
+    /* This function is called by a task, so a normal queue send is used. */
+    return xQueueSend(tx_queue, &character, pdMS_TO_TICKS(50)) == pdPASS;
 }
 
-
-// Send one character through USB CDC
-static bool send_usb_char(char symbol)
+bool communication_receive(char *character, TickType_t wait_time)
 {
-    // Check whether the USB device is mounted and CDC 1 is connected
-    if (!tud_mounted() || !tud_cdc_n_connected(CDC_ITF_TX)) {
+    if (rx_queue == NULL || character == NULL) {
         return false;
     }
 
-    // Wait for available TX buffer space, but do not wait forever
-    for (int i = 0; i < 100; i++) {
+    return xQueueReceive(rx_queue, character, wait_time) == pdPASS;
+}
 
-        if (!tud_mounted() ||
-            !tud_cdc_n_connected(CDC_ITF_TX)) {
-            return false;
+/* Send one character. Wait until the workstation opens the Morse port. */
+static void send_usb_character(char character)
+{
+    for (;;) {
+        if (tud_mounted() && tud_cdc_n_connected(MORSE_USB_PORT)) {
+            if (tud_cdc_n_write_available(MORSE_USB_PORT) > 0) {
+                uint32_t written = tud_cdc_n_write(
+                    MORSE_USB_PORT,
+                    &character,
+                    1
+                );
+
+                if (written == 1) {
+                    tud_cdc_n_write_flush(MORSE_USB_PORT);
+                    return;
+                }
+            }
         }
 
-        if (tud_cdc_n_write_available(CDC_ITF_TX) > 0) {
-            uint32_t written = tud_cdc_n_write(
-                CDC_ITF_TX,
-                &symbol,
-                1
-            );
-
-            tud_cdc_n_write_flush(CDC_ITF_TX);
-
-            return written == 1;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
-
-    return false;
 }
 
-
-// Communication task
-void communication_task(void *arg)
+/* Flash the red LED twice after the whole message has been sent to USB. */
+static void show_send_finished(void)
 {
-    (void)arg;
+    int count;
 
-    char symbol;
+    for (count = 0; count < 2; count++) {
+        set_red_led_status(true);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        set_red_led_status(false);
+        vTaskDelay(pdMS_TO_TICKS(120));
+    }
+}
 
-    while (1) {
+void communication_task(void *argument)
+{
+    char character;
 
-        // Wait for a Morse symbol from the queue
-        if (xQueueReceive(
-                morseQueue,
-                &symbol,
-                portMAX_DELAY) == pdPASS) {
+    (void)argument;
 
-            // Newline indicates the end of a message.
-            // Add two spaces followed by line feed.
-            if (symbol == '\n') {
-                if (!send_usb_char(' ')) continue;
-                if (!send_usb_char(' ')) continue;
-                send_usb_char('\n');
+    for (;;) {
+        if (xQueueReceive(tx_queue, &character, portMAX_DELAY) == pdPASS) {
+            send_usb_character(character);
+
+            if (character == '\n') {
+                show_send_finished();
             }
-            else {
-                send_usb_char(symbol);
-            }
+        }
+    }
+}
+
+/* TinyUSB calls this from the USB task when data arrives. */
+void tud_cdc_rx_cb(uint8_t interface_number)
+{
+    char buffer[64];
+    uint32_t count;
+    uint32_t i;
+
+    /* Read and ignore data sent to the debug port. */
+    if (interface_number != MORSE_USB_PORT) {
+        while (tud_cdc_n_available(interface_number) > 0) {
+            (void)tud_cdc_n_read(interface_number, buffer, sizeof(buffer));
+        }
+        return;
+    }
+
+    if (rx_queue == NULL) {
+        return;
+    }
+
+    while (tud_cdc_n_available(MORSE_USB_PORT) > 0) {
+        count = tud_cdc_n_read(MORSE_USB_PORT, buffer, sizeof(buffer));
+
+        if (count == 0) {
+            break;
+        }
+
+        for (i = 0; i < count; i++) {
+            /* Do not wait here. The USB task must keep running. */
+            (void)xQueueSend(rx_queue, &buffer[i], 0);
         }
     }
 }
