@@ -1,6 +1,6 @@
 /*
  * IMU input module.
- * Emirhan mainly focused on sensor sampling and the input state machine.
+ * Emirhan：focused on sensor sampling and the input state machine.
  * The detection was tested and adjusted together by both group members.
  */
 #include <stdbool.h>
@@ -16,7 +16,7 @@
 #include "communication.h"
 #include "morse.h"
 
-/* These values control how the tilting gestures are detected. */
+/* Ccontrol how the tilting gestures are detected. */
 #define SAMPLE_PERIOD_MS          20
 #define TILT_THRESHOLD_G          0.55f
 #define TILT_RELEASE_THRESHOLD_G  0.35f
@@ -58,8 +58,6 @@ static float choose_tilt_axis(float ax, float ay)
 }
 
 /*
- * This project only needs the accelerometer to detect tilting.
- * The old code also started the gyroscope, even though it is not used here.
  * The IMU is initialized from morse_task, after USB has started.
  */
 static bool morse_init(void)
@@ -148,9 +146,7 @@ void morse_task(void *argument)
     bool sensor_ready = false;
 
     /*
-     * Do not initialize the IMU in main().
      * USB is already running by the time this task starts.
-     * If the sensor is not ready, try again instead of stopping the program.
      */
     while (!sensor_ready) {
         if (xSemaphoreTake(i2c_mutex, portMAX_DELAY) == pdTRUE) {
