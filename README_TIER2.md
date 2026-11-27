@@ -1,124 +1,108 @@
-# JTKJ Pico W Morse project - Tier 2
+JTKJ Pico W Morse Communication Project – Tier 2
 
-Group members: Emirhan and Shile
+Group members:** Emirhan and Shile
 
-## What the program does
+1. Project Overview
 
-The Raspberry Pi Pico W and JTKJ HAT are used to send and receive Morse symbols. The program is written in C and uses FreeRTOS.
+This project uses a Raspberry Pi Pico W and JTKJ HAT to send and receive Morse code. The program is written in C and uses FreeRTOS.
 
-The device sends dots and dashes when it is tilted. Messages are sent to the course Serial Client over USB. The device can also receive Morse symbols from the Serial Client. Received symbols are shown on the OLED and played with the buzzer.
+Users can send Morse symbols by tilting the HAT. The symbols are sent to the course Serial Client through USB. The device can also receive Morse symbols from the Serial Client, display them on the OLED screen and play them through the buzzer.
 
-The program sends Morse characters as `.`, `-` and spaces. A message ends with two spaces and a newline (`\n`). It does not translate the symbols into letters.
+The program handles dots (`.`), dashes (`-`) and spaces. It does not translate Morse code into normal letters.
 
-## Sending a message
+2. Sending Morse Code
 
-1. Keep the HAT flat after startup until it is ready.
-2. Tilt it in the positive direction and hold it for about 150 ms to send a dot.
-3. Return it to the flat position.
-4. Tilt it in the opposite direction and hold it for about 150 ms to send a dash.
-5. Return it to flat before sending the next symbol.
-6. Pause between symbols. A longer pause adds the word separator.
-7. Press SW1 to finish the message.
+After startup, the HAT should be kept flat until the device is ready.
 
-The program checks the stronger of the X and Y accelerometer values. A positive value above the threshold is treated as a dot, and a negative value below the threshold is treated as a dash. The exact physical direction depends on how the board is held.
+ Tilt in the positive direction and hold for around 150 ms to send a dot.
+ Tilt in the opposite direction and hold for around 150 ms to send a dash.
+ Return the HAT to the flat position before sending another symbol.
+ Press SW1 to finish the message.
 
-The current settings are near the top of `src/morse.c`:
+The program reads the X and Y accelerometer values and uses the axis with the stronger movement. A positive value above the threshold is detected as a dot, while a negative value below the threshold is detected as a dash.
 
-- Sampling period: 20 ms.
-- Tilt threshold: 0.55 g.
-- Release threshold: 0.35 g.
-- Neutral range: between -0.25 g and +0.25 g.
-- New-sample weight in the filter: 0.35.
-- Gesture hold time: 150 ms.
-- Neutral start time: 250 ms.
-- Release stable time: 120 ms.
-- Letter gap: 900 ms.
-- Word gap: 2100 ms.
+An exponential moving average filter is used to make the sensor readings more stable and reduce small changes.
 
-The filter is a simple exponential moving average. It combines the newest reading with the previous filtered value to reduce small changes in the sensor readings.
+The main settings are defined in `src/morse.c`:
 
-## Receiving a message
+- Sampling period: 20 ms
+- Tilt threshold: 0.55 g
+- Release threshold: 0.35 g
+- Neutral range: -0.25 g to +0.25 g
+- Filter new-sample weight: 0.35
+- Gesture hold time: 150 ms
+- Neutral start time: 250 ms
+- Release stable time: 120 ms
+- Letter gap: 900 ms
+- Word gap: 2100 ms
 
-The Serial Client sends Morse characters to USB CDC1. The program puts the received characters in a FreeRTOS queue. The display task reads the queue and shows the latest characters on the OLED. The buzzer task plays a short tone for a dot and a longer tone for a dash. A newline ends the received message and plays two short confirmation tones.
+When SW1 is pressed, the program ends the message with two spaces followed by a newline (`\n`).
 
-The display keeps the latest 40 received characters. It ignores carriage return (`\r`) and uses line feed (`\n`) as the end of a message.
+3. Receiving Morse Code
 
-## FreeRTOS tasks
+Incoming Morse symbols are received through USB CDC1 and stored in a FreeRTOS queue.
 
-There are five tasks:
+The display task reads the received characters and shows the latest 40 characters on the OLED. The buzzer plays a short tone for a dot and a longer tone for a dash. When a newline is received, the message is considered complete and the buzzer plays two short confirmation tones.
 
-| Task | What it does |
-|---|---|
-| `usb_task` | Runs TinyUSB so the USB serial connection can be handled. |
-| `morse_task` | Reads the IMU, filters the tilt value, runs the input state machine and adds symbols to the transmit queue. |
-| `communication_task` | Takes symbols from the transmit queue and sends them through USB CDC1. |
-| `display_task` | Reads received characters and updates the OLED. |
-| `display_buzzer_task` | Plays sounds for received symbols. |
+The program ignores carriage return (`\r`) and uses line feed (`\n`) to detect the end of a message.
 
-## State machines
+4. FreeRTOS Tasks
 
-The input state machine has five states: `INPUT_WAIT_FOR_NEUTRAL`, `INPUT_READY`, `INPUT_DOT_PENDING`, `INPUT_DASH_PENDING` and `INPUT_WAIT_FOR_RELEASE`.
+The program uses five FreeRTOS tasks to handle different parts of the system:
 
-The receiving side has three states: `RX_IDLE`, `RX_RECEIVING` and `RX_COMPLETE`.
+- `usb_task`: Runs TinyUSB and handles USB communication.
+- `morse_task`: Reads the IMU sensor, filters the values and detects tilting gestures.
+- `communication_task`: Sends outgoing Morse symbols through USB CDC1.
+- `display_task`: Receives incoming characters and updates the OLED.
+- `display_buzzer_task`: Plays sounds for received Morse symbols.
 
-The transitions are shown in `assets/state_machines.md`.
+5. State Machines, Queues and Synchronization
 
-## Queues and I2C mutex
+The project uses two state machines.
 
-The program uses three queues:
+The input state machine in `morse.c` has five states: `INPUT_WAIT_FOR_NEUTRAL`, `INPUT_READY`, `INPUT_DOT_PENDING`, `INPUT_DASH_PENDING` and `INPUT_WAIT_FOR_RELEASE`. These states control how the device detects dots and dashes and waits for the HAT to return to its neutral position.
 
-- `tx_queue` holds symbols waiting to be sent to the workstation.
-- `rx_queue` holds characters received from the workstation.
-- `buzzer_queue` holds sound events for the buzzer task.
+The receiving state machine in `display.c` has three states: `RX_IDLE`, `RX_RECEIVING` and `RX_COMPLETE`. It manages the process of receiving and displaying a message.
 
-The IMU and OLED share the I2C bus. The `i2c_mutex` is passed to the IMU and display tasks so they do not use the bus at the same time.
+The program also uses three FreeRTOS queues:
 
-The USB receive callback does not wait for space in the queue. This keeps the USB task responsive, but characters can be lost if the receive queue becomes full. The queue is sized for normal short messages.
+- `tx_queue`: Stores outgoing symbols before they are sent.
+- `rx_queue`: Stores characters received from the Serial Client.
+- `buzzer_queue`: Stores sound events for the buzzer task.
 
-## USB interfaces
+The IMU and OLED share the I2C bus, so an `i2c_mutex` is used to prevent them from accessing it at the same time.
 
-- CDC0 is reserved for debug output.
-- CDC1 is the Communication CDC interface used for Morse messages.
+The USB receive callback uses a non-blocking queue operation to keep USB communication responsive. However, some characters may be lost if the receive queue becomes full.
 
-Use the course Serial Client and select the Communication CDC port.
+The state machine transitions are described in `assets/state_machines.md`.
 
-## Main focus areas in the group
+6. USB Communication
 
-The project was developed and integrated together. To make preparation for the final meeting easier, the main areas each member should lead when explaining are:
+The project uses two USB CDC interfaces:
 
-- **Shile:** `communication.c/.h` (USB CDC, transmit/receive queues and callback) and `display.c/.h` (OLED and buzzer).
-- **Emirhan:** `morse.c/.h` (IMU sampling, filtering and input state machine) and the task setup in `main.c`.
-- **Both:** project planning, integration, debugging, compiling and hardware testing.
+- CDC0 is reserved for debugging.
+- CDC1 is used for Morse communication.
 
-This is a primary-focus split, not a claim that the work was done separately. Both members should understand the overall program and be able to explain how the modules work together. The proposed contribution split is 3 points for each member, subject to agreement with the evaluator.
+The course Serial Client should connect to the Communication CDC port (CDC1).
 
-## Build
+After an outgoing message is written to USB, the red LED flashes twice. This indicates that the data has been written to USB, but does not confirm that the Serial Client has received or decoded it.
 
-Build in the course Linux environment where the Pico SDK, compiler and FreeRTOS kernel are installed/configured. The CMake project expects the usual `PICO_SDK_PATH` and `FREERTOS_KERNEL_PATH` setup used by the course environment.
+7. Work Division
 
-From the project root:
+We worked together on planning, integration, debugging and testing. Our main responsibilities were divided as follows:
 
-```bash
-rm -rf build
-cmake -S . -B build -DPICO_BOARD=pico_w
-cmake --build build -j$(nproc)
-```
+Shile:
+- Mainly worked on `communication.c/.h`, including USB CDC communication, transmit and receive queues, and the USB receive callback.
+- Mainly worked on `display.c/.h`, including OLED updates and buzzer output.
 
-The expected UF2 file is `build/hat_app.uf2`. Flash it to the Pico W in BOOTSEL mode.
+Emirhan:
+- Mainly worked on `morse.c/.h`, including IMU readings, sensor filtering and the input state machine.
+- Mainly worked on setting up the FreeRTOS tasks in `main.c`.
 
-## Testing notes
+Both:
+- Project planning and feature decisions.
+- Connecting the different modules.
+- Debugging and fixing integration problems.
+- Compiling and testing the complete program.
 
-The group reported that the previous project version compiled successfully and that outgoing Morse sending was tested successfully. This revised package changes the communication module and uses the `include/` folder, so it must be rebuilt and tested again before submission.
-
-The following checks should be performed on the actual HAT and course Serial Client:
-
-- [ ] OLED shows `MORSE READY` after startup.
-- [ ] Positive and negative tilts generate different symbols.
-- [ ] SW1 ends a message with two spaces and a newline.
-- [ ] The Serial Client receives and decodes an outgoing message.
-- [ ] Incoming symbols appear on the OLED.
-- [ ] The buzzer produces the dot, dash and message-end sounds.
-- [ ] The red LED flashes twice after an outgoing message is written to USB.
-- [ ] More than one message can be sent and received.
-
-Do not mark a check as complete until it has been tested with the revised package.
+This division describes our main areas of responsibility. We worked together throughout the project, and both members understand the overall program. We propose an equal contribution of 3 points for each member.
