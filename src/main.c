@@ -15,16 +15,12 @@
 #include "morse.h"
 
 /*
- * JTKJ Pico W Morse communication project - Tier 2
+ * JTKJ Pico W Morse Communication Project - Tier 1&2
  * Group members: Emirhan and Shile
  *
- * We worked on the project together. For the final meeting, our main focus
- * areas are divided as follows (the work was not completely separate):
- * - Shile: USB communication (communication.c/.h), OLED and buzzer.
- * - Emirhan: IMU input (morse.c/.h), input state machine and task setup.
- * - Both: planning, integration, debugging and hardware testing.
- *
- * We propose an equal contribution split: 3 points for each member.
+ * Main responsibilities:
+ * - Shile: USB communication, OLED display and buzzer.
+ * - Emirhan: IMU input, Morse detection and task setup.
  */
 
 #define USB_TASK_STACK_SIZE           2048
@@ -128,9 +124,7 @@ int main(void)
                     NULL) != pdPASS) {
         fatal_error();
     }
-
-#if (configNUMBER_OF_CORES > 1)
-    /* Keep USB processing on core 0, like the course examples. */
+    
     vTaskCoreAffinitySet(usb_handle, 1u << 0);
 #endif
 
@@ -143,7 +137,6 @@ int main(void)
 
     vTaskStartScheduler();
 
-    /* The scheduler should not return. */
     fatal_error();
     return 0;
 }
