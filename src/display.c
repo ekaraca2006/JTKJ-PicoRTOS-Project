@@ -1,7 +1,6 @@
 /*
  * Display and buzzer module.
- * Shile mainly focused on the OLED and buzzer part. Both members helped
- * connect and test this module with the receive code.
+ * Shile mainly focused on the OLED and buzzer part. 
  */
 #include <stddef.h>
 #include <string.h>
@@ -41,7 +40,6 @@ typedef enum {
 
 bool display_init(void)
 {
-    /* The buzzer is initialized even if the OLED is not found. */
     init_buzzer();
     buzzer_queue = xQueueCreate(BUZZER_QUEUE_LENGTH, sizeof(char));
     if (buzzer_queue == NULL) {
@@ -209,7 +207,6 @@ void display_task(void *argument)
             state = RX_IDLE;
         }
 
-        /* Keep the most recent 40 characters if the line is longer. */
         if (message_length >= RX_MESSAGE_LENGTH) {
             memmove(message, message + 1, RX_MESSAGE_LENGTH - 1);
             message_length = RX_MESSAGE_LENGTH - 1;
