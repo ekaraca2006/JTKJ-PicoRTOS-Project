@@ -1,6 +1,6 @@
 /*
  * USB communication for the Morse project.
- * Shile's main focus was this module. Both group members worked on integration
+ * Shile's part. Both group members worked on integration
  * and checked how the communication part works with the rest of the program.
  */
 #include <stdint.h>
@@ -52,7 +52,6 @@ bool morse_send(char symbol)
         return false;
     }
 
-    /* This function is called from a task, so a short wait is allowed. */
     return xQueueSend(tx_queue, &symbol, pdMS_TO_TICKS(100)) == pdPASS;
 }
 
@@ -86,7 +85,6 @@ static void flash_led_after_message(void)
 {
     int i;
 
-    /* This means the bytes were written to USB, not that the PC decoded them. */
     for (i = 0; i < 2; i++) {
         set_red_led_status(true);
         vTaskDelay(pdMS_TO_TICKS(100));
