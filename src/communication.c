@@ -1,4 +1,8 @@
-#include <stddef.h>
+/*
+ * USB communication for the Morse project.
+ * Shile's main focus was this module. Both group members worked on integration
+ * and checked how the communication part works with the rest of the program.
+ */
 #include <stdint.h>
 
 #include "FreeRTOS.h"
@@ -10,137 +14,123 @@
 
 #include "communication.h"
 
-#define TX_QUEUE_SIZE 256
-#define RX_QUEUE_SIZE 512
-#define MORSE_USB_PORT 1
+#define TX_QUEUE_SIZE 128
+#define RX_QUEUE_SIZE 256
+#define MORSE_CDC 1
 
-/* CDC0 is for debugging. Morse messages use CDC1. */
+/* CDC0 is used for debug and CDC1 is used for Morse messages. */
 static QueueHandle_t tx_queue = NULL;
 static QueueHandle_t rx_queue = NULL;
 
 bool communication_init(void)
 {
     tx_queue = xQueueCreate(TX_QUEUE_SIZE, sizeof(char));
-    if (tx_queue == NULL) {
-        return false;
-    }
-
     rx_queue = xQueueCreate(RX_QUEUE_SIZE, sizeof(char));
-    if (rx_queue == NULL) {
-        vQueueDelete(tx_queue);
-        tx_queue = NULL;
+
+    if (tx_queue == NULL || rx_queue == NULL) {
+        if (tx_queue != NULL) {
+            vQueueDelete(tx_queue);
+            tx_queue = NULL;
+        }
+        if (rx_queue != NULL) {
+            vQueueDelete(rx_queue);
+            rx_queue = NULL;
+        }
         return false;
     }
 
     return true;
 }
 
-bool morse_send(char character)
+bool morse_send(char symbol)
 {
     if (tx_queue == NULL) {
         return false;
     }
 
-    if (character != '.' && character != '-' &&
-        character != ' ' && character != '\n') {
+    if (symbol != '.' && symbol != '-' && symbol != ' ' && symbol != '\n') {
         return false;
     }
 
-    /* This function is called by a task, so a normal queue send is used. */
-    return xQueueSend(tx_queue, &character, pdMS_TO_TICKS(50)) == pdPASS;
+    /* This function is called from a task, so a short wait is allowed. */
+    return xQueueSend(tx_queue, &symbol, pdMS_TO_TICKS(100)) == pdPASS;
 }
 
-bool communication_receive(char *character, TickType_t wait_time)
+bool communication_receive(char *character, TickType_t wait_ticks)
 {
     if (rx_queue == NULL || character == NULL) {
         return false;
     }
 
-    return xQueueReceive(rx_queue, character, wait_time) == pdPASS;
+    return xQueueReceive(rx_queue, character, wait_ticks) == pdPASS;
 }
 
-/* Send one character. Wait until the workstation opens the Morse port. */
+/* Wait until the workstation is connected, then send one character. */
 static void send_usb_character(char character)
 {
     for (;;) {
-        if (tud_mounted() && tud_cdc_n_connected(MORSE_USB_PORT)) {
-            if (tud_cdc_n_write_available(MORSE_USB_PORT) > 0) {
-                uint32_t written = tud_cdc_n_write(
-                    MORSE_USB_PORT,
-                    &character,
-                    1
-                );
+        if (tud_mounted() && tud_cdc_n_connected(MORSE_CDC) &&
+            tud_cdc_n_write_available(MORSE_CDC) > 0) {
 
-                if (written == 1) {
-                    tud_cdc_n_write_flush(MORSE_USB_PORT);
-                    return;
-                }
+            if (tud_cdc_n_write(MORSE_CDC, &character, 1) == 1) {
+                tud_cdc_n_write_flush(MORSE_CDC);
+                return;
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
 
-/* Flash the red LED twice after the whole message has been sent to USB. */
-static void show_send_finished(void)
+static void flash_led_after_message(void)
 {
-    int count;
+    int i;
 
-    for (count = 0; count < 2; count++) {
+    /* This means the bytes were written to USB, not that the PC decoded them. */
+    for (i = 0; i < 2; i++) {
         set_red_led_status(true);
-        vTaskDelay(pdMS_TO_TICKS(120));
+        vTaskDelay(pdMS_TO_TICKS(100));
         set_red_led_status(false);
-        vTaskDelay(pdMS_TO_TICKS(120));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
 void communication_task(void *argument)
 {
-    char character;
+    char symbol;
 
     (void)argument;
 
     for (;;) {
-        if (xQueueReceive(tx_queue, &character, portMAX_DELAY) == pdPASS) {
-            send_usb_character(character);
+        if (xQueueReceive(tx_queue, &symbol, portMAX_DELAY) == pdPASS) {
+            send_usb_character(symbol);
 
-            if (character == '\n') {
-                show_send_finished();
+            if (symbol == '\n') {
+                flash_led_after_message();
             }
         }
     }
 }
 
-/* TinyUSB calls this from the USB task when data arrives. */
+/* TinyUSB calls this when data has arrived on a CDC interface. */
 void tud_cdc_rx_cb(uint8_t interface_number)
 {
-    char buffer[64];
+    char buffer[32];
     uint32_t count;
     uint32_t i;
 
-    /* Read and ignore data sent to the debug port. */
-    if (interface_number != MORSE_USB_PORT) {
-        while (tud_cdc_n_available(interface_number) > 0) {
-            (void)tud_cdc_n_read(interface_number, buffer, sizeof(buffer));
-        }
-        return;
-    }
-
-    if (rx_queue == NULL) {
-        return;
-    }
-
-    while (tud_cdc_n_available(MORSE_USB_PORT) > 0) {
-        count = tud_cdc_n_read(MORSE_USB_PORT, buffer, sizeof(buffer));
-
+    /* Only CDC1 carries Morse messages. Read other interfaces to clear them. */
+    while (tud_cdc_n_available(interface_number) > 0) {
+        count = tud_cdc_n_read(interface_number, buffer, sizeof(buffer));
         if (count == 0) {
             break;
         }
 
-        for (i = 0; i < count; i++) {
-            /* Do not wait here. The USB task must keep running. */
-            (void)xQueueSend(rx_queue, &buffer[i], 0);
+        if (interface_number == MORSE_CDC && rx_queue != NULL) {
+            for (i = 0; i < count; i++) {
+                /* Do not block inside the USB callback. A full queue can drop data. */
+                (void)xQueueSend(rx_queue, &buffer[i], 0);
+            }
         }
     }
 }
